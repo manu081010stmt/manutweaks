@@ -8,7 +8,6 @@ $ManuTweaksUrl  = 'https://raw.githubusercontent.com/manu081010stmt/manutweaks/m
 $AuthSalt       = 'gWG6zurDC2jPONEdgp+P3w=='
 $AuthHash       = 't87iufZq6+DB3TOZl9dp5CtXnx+cK5Jn4qM8ZuuMEno='
 $AuthIterations = 210000
-
 # ===================== REGISTRO DE ACTIVIDAD (solo ventana, sin archivos) =====================
 function MT-Color {
     param([int]$R, [int]$G, [int]$B)
