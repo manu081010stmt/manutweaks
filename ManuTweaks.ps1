@@ -4,7 +4,7 @@
 # Nada se modifica sin contrasena correcta. Al acertarla: copia de valores + punto de restauracion.
 
 # ===================== CONFIGURACION =====================
-$ManuTweaksUrl  = 'https://raw.githubusercontent.com/manu081010stmt/manutweaks/main/ManuTweaks.ps1'
+$ManuTweaksUrl  = 'iwr -useb https://raw.githubusercontent.com/manu081010stmt/manutweaks/main/ManuTweaks.ps1 | iex'
 $AuthSalt       = 'gWG6zurDC2jPONEdgp+P3w=='
 $AuthHash       = 't87iufZq6+DB3TOZl9dp5CtXnx+cK5Jn4qM8ZuuMEno='
 $AuthIterations = 210000
@@ -492,7 +492,6 @@ function MT-NewButton {
 
 function MT-GuiBusy {
     param([bool]$Busy)
-    $global:MTBusy = $Busy
     foreach ($b in $global:MTButtons) { $b.Enabled = -not $Busy }
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -535,18 +534,24 @@ function MT-AskPassword {
     return $tb.Text
 }
 
+function MT-SetButtons {
+    param([bool]$Enabled)
+    foreach ($b in $global:MTButtons) { $b.Enabled = $Enabled }
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
 function MT-ShowMain {
-    $navy   = MT-Color 10 25 47
-    $panel  = MT-Color 17 40 71
-    $head   = MT-Color 0 51 102
-    $blue   = MT-Color 0 102 204
-    $steel  = MT-Color 45 62 88
-    $light  = MT-Color 214 230 250
-    $logBg  = MT-Color 6 15 30
+    $navy  = MT-Color 16 28 48
+    $blue  = MT-Color 0 102 204
+    $grey  = MT-Color 55 70 95
+    $red   = MT-Color 150 40 40
+    $light = MT-Color 225 235 250
+    $muted = MT-Color 150 175 210
+    $logBg = MT-Color 8 16 30
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = 'ManuTweaks'
-    $form.ClientSize = New-Object System.Drawing.Size(980, 640)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 520)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedSingle'
     $form.MaximizeBox = $false
@@ -554,59 +559,31 @@ function MT-ShowMain {
     $form.ForeColor = $light
     $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     $global:MTForm = $form
-    $global:MTBusy = $false
 
-    $title = New-Object System.Windows.Forms.Label
-    $title.Text = '   M A N U T W E A K S'
-    $title.Font = New-Object System.Drawing.Font('Segoe UI', 18, [System.Drawing.FontStyle]::Bold)
-    $title.ForeColor = [System.Drawing.Color]::White
-    $title.BackColor = $head
-    $title.Location = New-Object System.Drawing.Point(0, 0)
-    $title.Size = New-Object System.Drawing.Size(980, 70)
-    $title.TextAlign = 'MiddleLeft'
+    $title = MT-NewLabel 'ManuTweaks' 20 14 ([System.Drawing.Color]::White) 18 'Bold'
+    $sub   = MT-NewLabel 'Optimizacion de Windows' 22 52 $muted 9
 
-    $left = New-Object System.Windows.Forms.Panel
-    $left.Location = New-Object System.Drawing.Point(20, 90)
-    $left.Size = New-Object System.Drawing.Size(260, 530)
-    $left.BackColor = $panel
-
-    $lblPerfil = New-Object System.Windows.Forms.Label
-    $lblPerfil.Text = 'PERFIL DE JUEGO'
-    $lblPerfil.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-    $lblPerfil.Location = New-Object System.Drawing.Point(20, 18)
-    $lblPerfil.AutoSize = $true
-
+    $lblPerfil = MT-NewLabel 'Perfil de juego' 20 92 $light 10 'Bold'
     $rbLow = New-Object System.Windows.Forms.RadioButton
     $rbLow.Text = 'Bajos'
-    $rbLow.Location = New-Object System.Drawing.Point(20, 44)
+    $rbLow.Location = New-Object System.Drawing.Point(20, 118)
     $rbLow.AutoSize = $true
     $rbLow.Checked = $true
+    $rbLow.ForeColor = $light
     $rbHigh = New-Object System.Windows.Forms.RadioButton
     $rbHigh.Text = 'Medios y altos'
-    $rbHigh.Location = New-Object System.Drawing.Point(20, 72)
+    $rbHigh.Location = New-Object System.Drawing.Point(120, 118)
     $rbHigh.AutoSize = $true
+    $rbHigh.ForeColor = $light
     $global:MTRadioLow = $rbLow
 
-    $btnRun = MT-NewButton 'Ejecutar optimizacion' 20 115 220 44 $blue
-
-    $lblRes = New-Object System.Windows.Forms.Label
-    $lblRes.Text = 'RESTAURAR'
-    $lblRes.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-    $lblRes.Location = New-Object System.Drawing.Point(20, 185)
-    $lblRes.AutoSize = $true
-
-    $btnLast = MT-NewButton 'Ultima sesion' 20 212 220 38 $steel
-    $btnDef  = MT-NewButton 'Valores predeterminados' 20 256 220 38 $steel
-    $btnRst  = MT-NewButton 'Restaurar sistema de Windows' 20 300 220 38 $steel
-
-    $btnNo   = MT-NewButton 'No (cerrar sin ejecutar)' 20 432 220 38 $steel
-    $btnExit = MT-NewButton 'Salir de PowerShell' 20 476 220 38 (MT-Color 140 35 35)
-
-    $left.Controls.AddRange(@($lblPerfil, $rbLow, $rbHigh, $btnRun, $lblRes, $btnLast, $btnDef, $btnRst, $btnNo, $btnExit))
+    $btnRun  = MT-NewButton 'Iniciar optimizacion' 20 160 250 42 $blue
+    $btnRst  = MT-NewButton 'Restaurar' 290 160 250 42 $grey
+    $btnExit = MT-NewButton 'Salir' 20 212 520 36 $red
 
     $rich = New-Object System.Windows.Forms.RichTextBox
-    $rich.Location = New-Object System.Drawing.Point(300, 90)
-    $rich.Size = New-Object System.Drawing.Size(660, 470)
+    $rich.Location = New-Object System.Drawing.Point(20, 264)
+    $rich.Size = New-Object System.Drawing.Size(520, 236)
     $rich.ReadOnly = $true
     $rich.BackColor = $logBg
     $rich.ForeColor = $light
@@ -614,96 +591,53 @@ function MT-ShowMain {
     $rich.Font = New-Object System.Drawing.Font('Consolas', 9.5)
     $global:MTRichBox = $rich
 
-    $bar = New-Object System.Windows.Forms.ProgressBar
-    $bar.Location = New-Object System.Drawing.Point(300, 572)
-    $bar.Size = New-Object System.Drawing.Size(660, 18)
-    $bar.Minimum = 0
-    $bar.Maximum = 100
-    $global:MTProgress = $bar
-
-    $status = New-Object System.Windows.Forms.Label
-    $status.Text = 'Listo.'
-    $status.Location = New-Object System.Drawing.Point(300, 598)
-    $status.AutoSize = $true
-    $status.ForeColor = MT-Color 140 170 210
-
-    $global:MTButtons = @($btnRun, $btnLast, $btnDef, $btnRst, $btnNo, $btnExit)
+    $global:MTButtons = @($btnRun, $btnRst, $btnExit, $rbLow, $rbHigh)
 
     $btnRun.Add_Click({
-        if ($global:MTBusy) { return }
-        MT-GuiBusy $true
-        try {
-            $perfil = if ($global:MTRadioLow.Checked) { 1 } else { 2 }
-            MT-Execute -GameProfile $perfil
+        $pregunta = 'Se aplicaran los ajustes de optimizacion. Antes se guardaran los valores actuales. Continuar?'
+        $res = [System.Windows.Forms.MessageBox]::Show($pregunta, 'ManuTweaks',
+            [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($res -ne [System.Windows.Forms.DialogResult]::Yes) {
+            MT-Log -Level INFO -Message 'Cancelado. No se ha aplicado nada.'
+            return
         }
-        catch {
-            MT-Log -Level ERROR -Message ('Fallo inesperado: ' + $_.Exception.Message)
-        }
-        finally {
-            $global:MTProgress.Value = 0
-            MT-GuiBusy $false
-        }
-    })
-
-    $btnLast.Add_Click({
-        if ($global:MTBusy) { return }
-        MT-GuiBusy $true
-        try { MT-RestoreLast } finally { MT-GuiBusy $false }
-    })
-
-    $btnDef.Add_Click({
-        if ($global:MTBusy) { return }
-        MT-GuiBusy $true
-        try {
-            $t = New-MTTask -Module 'Predeterminados' -Name 'Valores predeterminados' -Items (MT-DefaultItems)
-            $r = MT-RunTasks -Tasks @($t)
-            MT-Summary -Results $r
-        }
-        finally {
-            $global:MTProgress.Value = 0
-            MT-GuiBusy $false
-        }
+        $perfil = if ($global:MTRadioLow.Checked) { 1 } else { 2 }
+        MT-SetButtons $false
+        try { MT-Execute -GameProfile $perfil }
+        catch { MT-Log -Level ERROR -Message ('Fallo inesperado: ' + $_.Exception.Message) }
+        finally { MT-SetButtons $true }
+        [System.Windows.Forms.MessageBox]::Show('Proceso terminado. Revisa el registro.', 'ManuTweaks',
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
     })
 
     $btnRst.Add_Click({
-        if ($global:MTBusy) { return }
-        try { Start-Process -FilePath 'rstrui.exe' }
-        catch { MT-Log -Level ERROR -Message ('No se pudo abrir Restaurar sistema: ' + $_.Exception.Message) }
-    })
-
-    $btnNo.Add_Click({
-        if ($global:MTBusy) { return }
-        MT-Log -Level INFO -Message 'No se ha ejecutado nada.'
-        $global:MTForm.Close()
+        $pregunta = 'Restaurar los valores guardados en la ultima sesion?'
+        $res = [System.Windows.Forms.MessageBox]::Show($pregunta, 'ManuTweaks',
+            [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($res -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        MT-SetButtons $false
+        try { MT-RestoreLast }
+        catch { MT-Log -Level ERROR -Message ('Fallo al restaurar: ' + $_.Exception.Message) }
+        finally { MT-SetButtons $true }
     })
 
     $btnExit.Add_Click({
-        if ($global:MTBusy) { return }
         $global:MTExitShell = $true
         $global:MTForm.Close()
     })
 
     $form.Add_Shown({
-        MT-GuiBusy $true
-        try { MT-StartSession } finally { MT-GuiBusy $false }
+        MT-SetButtons $false
+        try { MT-StartSession } finally { MT-SetButtons $true }
     })
 
-    # No permitir cerrar la ventana mientras un proceso esta en curso
-    $form.Add_FormClosing({
-        param($sender, $e)
-        if ($global:MTBusy) {
-            $e.Cancel = $true
-            MT-Log -Level WARN -Message 'Espera a que termine el proceso actual antes de cerrar.'
-        }
-    })
+    $form.Controls.AddRange(@($title, $sub, $lblPerfil, $rbLow, $rbHigh, $btnRun, $btnRst, $btnExit, $rich))
+    [void]$form.ShowDialog()
 
-    $form.Controls.AddRange(@($title, $left, $rich, $bar, $status))
-    $form.ShowDialog() | Out-Null
-
-    $global:MTRichBox  = $null
-    $global:MTProgress = $null
-    $global:MTButtons  = $null
+    $global:MTRichBox = $null
+    $global:MTButtons = $null
 }
+
 
 function MT-Main {
     if (-not (MT-IsAdmin)) {
