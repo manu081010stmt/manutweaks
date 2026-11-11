@@ -624,10 +624,6 @@ function MT-ShowMain {
     })
 
     $btnRst.Add_Click({
-        $pregunta = 'Restaurar los valores guardados al abrir esta ventana?'
-        $res = [System.Windows.Forms.MessageBox]::Show($pregunta, 'ManuTweaks',
-            [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-        if ($res -ne [System.Windows.Forms.DialogResult]::Yes) { return }
         MT-SetButtons $false
         try { MT-RestoreLast }
         catch { MT-Log -Level ERROR -Message ('Fallo al restaurar: ' + $_.Exception.Message) }
