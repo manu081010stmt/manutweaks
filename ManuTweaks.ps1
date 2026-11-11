@@ -958,7 +958,7 @@ function OPT-ToItem { param($r, [bool]$Undo)
 
 function OPT-ApplyTweak { param($T, [bool]$Undo)
     $label = if ($Undo) { 'Deshaciendo' } else { 'Aplicando' }
-    MT-Log -Level INFO -Message "$label: $($T.Name)"
+    MT-Log -Level INFO -Message "${label}: $($T.Name)"
     try {
         foreach ($r in $T.Registry) { MT-ApplyItem -Item (OPT-ToItem $r $Undo) }
         foreach ($s in $T.Services) {
@@ -1265,4 +1265,3 @@ function MT-Main {
 }
 
 if (-not $env:MANUTWEAKS_NO_RUN) { MT-Main }
-
