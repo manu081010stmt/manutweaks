@@ -15,65 +15,18 @@ $MTBackupDir    = Join-Path $MTRoot 'Backups'
 # ===================== INTERFAZ =====================
 $MTWidth = 62
 
-function MT-Header {
-    Clear-Host
-    $bar = '=' * $MTWidth
-    Write-Host ''
-    Write-Host ('  ' + $bar) -ForegroundColor DarkBlue
-    Write-Host ('  ' + '   M A N U T W E A K S'.PadRight($MTWidth)) -ForegroundColor White -BackgroundColor DarkBlue
-    Write-Host ('  ' + '   Optimizacion de Windows 10 / 11'.PadRight($MTWidth)) -ForegroundColor Cyan -BackgroundColor DarkBlue
-    Write-Host ('  ' + $bar) -ForegroundColor DarkBlue
-}
 
-function MT-Section {
-    param([string]$Title)
-    Write-Host ''
-    Write-Host ('  ' + (' ' + $Title + ' ').PadRight($MTWidth)) -ForegroundColor White -BackgroundColor Blue
-    Write-Host ''
-}
 
-function MT-Option {
-    param([string]$Key, [string]$Text, [string]$Detail = '')
-    Write-Host ('   [' + $Key + '] ') -ForegroundColor Cyan -NoNewline
-    Write-Host $Text -ForegroundColor White -NoNewline
-    if ($Detail) { Write-Host ('  ' + $Detail) -ForegroundColor DarkGray } else { Write-Host '' }
-}
 
-function MT-Log {
-    param(
-        [ValidateSet('INFO', 'OK', 'WARN', 'ERROR', 'DEBUG')][string]$Level = 'INFO',
-        [Parameter(Mandatory = $true)][string]$Message
-    )
-    $line = '[{0}] [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
-    if ($global:MTLogFile) { Add-Content -LiteralPath $global:MTLogFile -Value $line -Encoding UTF8 }
-    $tag = switch ($Level) {
-        'OK'    { @('[ OK ]', 'Green') }
-        'WARN'  { @('[WARN]', 'Yellow') }
-        'ERROR' { @('[FAIL]', 'Red') }
-        'DEBUG' { @('[ .. ]', 'DarkGray') }
-        default { @('[INFO]', 'Cyan') }
-    }
-    Write-Host ('  ' + $tag[0] + ' ') -ForegroundColor $tag[1] -NoNewline
-    Write-Host $Message -ForegroundColor Gray
-}
 
-function MT-Pause {
-    Write-Host ''
-    Read-Host '  Pulsa Enter para continuar' | Out-Null
-}
 
 # ===================== ADMIN Y CONTRASENA =====================
+# (la interfaz grafica esta al final del archivo)
 function MT-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     return (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function MT-ReadPassword {
-    $secure = Read-Host '  Contrasena' -AsSecureString
-    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
-}
 
 function MT-TestPassword {
     param([AllowEmptyString()][string]$Password)
@@ -114,7 +67,8 @@ function MT-SetReg {
     if (-not (Test-Path -LiteralPath $Path)) { New-Item -Path $Path -Force -ErrorAction Stop | Out-Null }
     Set-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -Type DWord -ErrorAction Stop
     $actual = (Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction Stop).$Name
-    if ((([int64]$actual) -band 0xFFFFFFFF) -ne (([int64]$Value) -band 0xFFFFFFFF)) {
+    $mask = [int64]4294967295
+    if ((([int64]$actual) -band $mask) -ne (([int64]$Value) -band $mask)) {
         throw "Verificacion fallida en $Path\$Name (esperado $Value, leido $actual)."
     }
 }
@@ -319,8 +273,12 @@ function MT-GetTasks {
 
         (New-MTTask -Module 'Servicios' -Name 'DiagTrack (telemetria)' `
             -Description 'ADVERTENCIA: deshabilita la experiencia de usuario y telemetria asociadas.' -Action {
+                $svc = Get-Service -Name 'DiagTrack' -ErrorAction SilentlyContinue
+                if (-not $svc) {
+                    $global:MTSkipReason = 'El servicio DiagTrack no existe en este equipo.'
+                    return
+                }
                 MT-AddRegBackup -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\DiagTrack' -Name 'Start'
-                Get-Service -Name 'DiagTrack' -ErrorAction Stop | Out-Null
                 Set-Service -Name 'DiagTrack' -StartupType Disabled -ErrorAction Stop
                 Stop-Service -Name 'DiagTrack' -Force -ErrorAction SilentlyContinue
                 $s = Get-Service -Name 'DiagTrack' -ErrorAction Stop
@@ -385,12 +343,20 @@ function MT-RunTasks {
     foreach ($t in $Tasks) {
         $i++
         Write-Progress -Activity 'ManuTweaks' -Status "$($t.Module): $($t.Name)" -PercentComplete ([int](100 * $i / $total))
+        if ($global:MTProgress) { $global:MTProgress.Value = [int](100 * $i / $total) }
         MT-Log -Level INFO -Message "[$i/$total] $($t.Module) > $($t.Name)"
         try {
             foreach ($item in $t.Items) { MT-ApplyItem -Item $item }
+            $global:MTSkipReason = $null
             if ($t.Action) { & $t.Action }
-            [void]$results.Add([pscustomobject]@{ Module = $t.Module; Name = $t.Name; Status = 'Correcta'; Detail = '' })
-            MT-Log -Level OK -Message "$($t.Name) completada."
+            if ($global:MTSkipReason) {
+                [void]$results.Add([pscustomobject]@{ Module = $t.Module; Name = $t.Name; Status = 'Omitida'; Detail = $global:MTSkipReason })
+                MT-Log -Level WARN -Message "$($t.Name) omitida: $($global:MTSkipReason)"
+            }
+            else {
+                [void]$results.Add([pscustomobject]@{ Module = $t.Module; Name = $t.Name; Status = 'Correcta'; Detail = '' })
+                MT-Log -Level OK -Message "$($t.Name) completada."
+            }
         }
         catch {
             $msg = $_.Exception.Message
@@ -406,8 +372,11 @@ function MT-Summary {
     param([object[]]$Results)
     $ok     = @($Results | Where-Object { $_.Status -eq 'Correcta' })
     $errors = @($Results | Where-Object { $_.Status -eq 'Error' })
+    $skip   = @($Results | Where-Object { $_.Status -eq 'Omitida' })
     MT-Section 'Resumen'
     MT-Log -Level OK -Message "Correctas: $($ok.Count)"
+    MT-Log -Level WARN -Message "Omitidas: $($skip.Count)"
+    foreach ($o in $skip) { MT-Log -Level WARN -Message "  - $($o.Name): $($o.Detail)" }
     if ($errors.Count -gt 0) {
         MT-Log -Level ERROR -Message "Errores: $($errors.Count)"
         foreach ($e in $errors) { MT-Log -Level ERROR -Message "  - $($e.Name): $($e.Detail)" }
@@ -461,33 +430,263 @@ function MT-RestoreLast {
     MT-Restore -ManifestPath $snap
 }
 
-function MT-RestoreMenu {
-    $back = $false
-    while (-not $back) {
-        MT-Header
-        MT-Section 'Restaurar'
-        MT-Option '1' 'Restaurar la ultima sesion' 'valores anteriores a la ultima ejecucion'
-        MT-Option '2' 'Restaurar valores predeterminados' 'default.reg'
-        MT-Option '3' 'Abrir Restaurar sistema de Windows' 'punto de restauracion'
-        MT-Option '0' 'Volver'
-        Write-Host ''
-        $op = (Read-Host '  Elige una opcion').Trim()
-        switch ($op) {
-            '1' { MT-RestoreLast; MT-Pause }
-            '2' {
-                $t = New-MTTask -Module 'Predeterminados' -Name 'Valores predeterminados' -Items (MT-DefaultItems)
-                $r = MT-RunTasks -Tasks @($t)
-                MT-Summary -Results $r
-                MT-Pause
-            }
-            '3' { Start-Process -FilePath 'rstrui.exe' }
-            '0' { $back = $true }
-            default { MT-Log -Level WARN -Message 'Opcion no valida.'; MT-Pause }
-        }
+
+# ===================== FLUJO PRINCIPAL =====================
+
+
+# ===================== REGISTRO DE ACTIVIDAD =====================
+function MT-Log {
+    param(
+        [ValidateSet('INFO', 'OK', 'WARN', 'ERROR', 'DEBUG')][string]$Level = 'INFO',
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+    $line = '[{0}] [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
+    if ($global:MTLogFile) { Add-Content -LiteralPath $global:MTLogFile -Value $line -Encoding UTF8 }
+    $tag = switch ($Level) {
+        'OK'    { '[ OK ]' }
+        'WARN'  { '[WARN]' }
+        'ERROR' { '[FAIL]' }
+        'DEBUG' { '[ .. ]' }
+        default { '[INFO]' }
+    }
+    if ($global:MTRichBox) {
+        $colors = @{ OK = 'LightGreen'; WARN = 'Gold'; ERROR = 'Tomato'; DEBUG = 'Gray'; INFO = 'LightSkyBlue' }
+        $box = $global:MTRichBox
+        $box.SelectionStart  = $box.TextLength
+        $box.SelectionLength = 0
+        $box.SelectionColor  = [System.Drawing.Color]::FromName($colors[$Level])
+        $box.SelectedText    = "$tag $Message`r`n"
+        $box.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+    else {
+        $c = switch ($Level) { 'OK' { 'Green' } 'WARN' { 'Yellow' } 'ERROR' { 'Red' } 'DEBUG' { 'DarkGray' } default { 'Cyan' } }
+        Write-Host ('  ' + $tag + ' ' + $Message) -ForegroundColor $c
     }
 }
 
-# ===================== FLUJO PRINCIPAL =====================
+function MT-Section {
+    param([string]$Title)
+    MT-Log -Level INFO -Message ('=== ' + $Title + ' ===')
+}
+
+# ===================== INTERFAZ GRAFICA =====================
+function MT-Color {
+    param([int]$R, [int]$G, [int]$B)
+    [System.Drawing.Color]::FromArgb($R, $G, $B)
+}
+
+function MT-NewButton {
+    param([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, [System.Drawing.Color]$Back)
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $Text
+    $b.Location = New-Object System.Drawing.Point($X, $Y)
+    $b.Size = New-Object System.Drawing.Size($W, $H)
+    $b.FlatStyle = 'Flat'
+    $b.FlatAppearance.BorderSize = 0
+    $b.BackColor = $Back
+    $b.ForeColor = [System.Drawing.Color]::White
+    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
+    return $b
+}
+
+function MT-GuiBusy {
+    param([bool]$Busy)
+    foreach ($b in $global:MTButtons) { $b.Enabled = -not $Busy }
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function MT-AskPassword {
+    $navy = MT-Color 10 25 47
+    $light = MT-Color 214 230 250
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = 'ManuTweaks - Acceso'
+    $dlg.ClientSize = New-Object System.Drawing.Size(380, 170)
+    $dlg.StartPosition = 'CenterScreen'
+    $dlg.BackColor = $navy
+    $dlg.ForeColor = $light
+    $dlg.FormBorderStyle = 'FixedDialog'
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = 'Introduce la contrasena para continuar:'
+    $lbl.Location = New-Object System.Drawing.Point(20, 20)
+    $lbl.AutoSize = $true
+
+    $tb = New-Object System.Windows.Forms.TextBox
+    $tb.Location = New-Object System.Drawing.Point(20, 50)
+    $tb.Size = New-Object System.Drawing.Size(340, 28)
+    $tb.PasswordChar = [char]'*'
+    $tb.UseSystemPasswordChar = $false
+
+    $ok = MT-NewButton 'Aceptar' 150 100 100 34 (MT-Color 0 102 204)
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $cancel = MT-NewButton 'Cancelar' 260 100 100 34 (MT-Color 45 62 88)
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $dlg.AcceptButton = $ok
+    $dlg.CancelButton = $cancel
+
+    $dlg.Controls.AddRange(@($lbl, $tb, $ok, $cancel))
+    $dlg.Add_Shown({ $tb.Focus() | Out-Null })
+    $res = $dlg.ShowDialog()
+    if ($res -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+    return $tb.Text
+}
+
+function MT-ShowMain {
+    $navy   = MT-Color 10 25 47
+    $panel  = MT-Color 17 40 71
+    $head   = MT-Color 0 51 102
+    $blue   = MT-Color 0 102 204
+    $steel  = MT-Color 45 62 88
+    $light  = MT-Color 214 230 250
+    $logBg  = MT-Color 6 15 30
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'ManuTweaks'
+    $form.ClientSize = New-Object System.Drawing.Size(980, 640)
+    $form.StartPosition = 'CenterScreen'
+    $form.FormBorderStyle = 'FixedSingle'
+    $form.MaximizeBox = $false
+    $form.BackColor = $navy
+    $form.ForeColor = $light
+    $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $global:MTForm = $form
+
+    $title = New-Object System.Windows.Forms.Label
+    $title.Text = '   M A N U T W E A K S'
+    $title.Font = New-Object System.Drawing.Font('Segoe UI', 18, [System.Drawing.FontStyle]::Bold)
+    $title.ForeColor = [System.Drawing.Color]::White
+    $title.BackColor = $head
+    $title.Location = New-Object System.Drawing.Point(0, 0)
+    $title.Size = New-Object System.Drawing.Size(980, 70)
+    $title.TextAlign = 'MiddleLeft'
+
+    $left = New-Object System.Windows.Forms.Panel
+    $left.Location = New-Object System.Drawing.Point(20, 90)
+    $left.Size = New-Object System.Drawing.Size(260, 530)
+    $left.BackColor = $panel
+
+    $lblPerfil = New-Object System.Windows.Forms.Label
+    $lblPerfil.Text = 'PERFIL DE JUEGO'
+    $lblPerfil.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $lblPerfil.Location = New-Object System.Drawing.Point(20, 18)
+    $lblPerfil.AutoSize = $true
+
+    $rbLow = New-Object System.Windows.Forms.RadioButton
+    $rbLow.Text = 'Bajos'
+    $rbLow.Location = New-Object System.Drawing.Point(20, 44)
+    $rbLow.AutoSize = $true
+    $rbLow.Checked = $true
+    $rbHigh = New-Object System.Windows.Forms.RadioButton
+    $rbHigh.Text = 'Medios y altos'
+    $rbHigh.Location = New-Object System.Drawing.Point(20, 72)
+    $rbHigh.AutoSize = $true
+    $global:MTRadioLow = $rbLow
+
+    $btnRun = MT-NewButton 'Ejecutar optimizacion' 20 115 220 44 $blue
+
+    $lblRes = New-Object System.Windows.Forms.Label
+    $lblRes.Text = 'RESTAURAR'
+    $lblRes.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $lblRes.Location = New-Object System.Drawing.Point(20, 185)
+    $lblRes.AutoSize = $true
+
+    $btnLast = MT-NewButton 'Ultima sesion' 20 212 220 38 $steel
+    $btnDef  = MT-NewButton 'Valores predeterminados' 20 256 220 38 $steel
+    $btnRst  = MT-NewButton 'Restaurar sistema de Windows' 20 300 220 38 $steel
+
+    $btnNo   = MT-NewButton 'No (cerrar sin ejecutar)' 20 432 220 38 $steel
+    $btnExit = MT-NewButton 'Salir de PowerShell' 20 476 220 38 (MT-Color 140 35 35)
+
+    $left.Controls.AddRange(@($lblPerfil, $rbLow, $rbHigh, $btnRun, $lblRes, $btnLast, $btnDef, $btnRst, $btnNo, $btnExit))
+
+    $rich = New-Object System.Windows.Forms.RichTextBox
+    $rich.Location = New-Object System.Drawing.Point(300, 90)
+    $rich.Size = New-Object System.Drawing.Size(660, 470)
+    $rich.ReadOnly = $true
+    $rich.BackColor = $logBg
+    $rich.ForeColor = $light
+    $rich.BorderStyle = 'FixedSingle'
+    $rich.Font = New-Object System.Drawing.Font('Consolas', 9.5)
+    $global:MTRichBox = $rich
+
+    $bar = New-Object System.Windows.Forms.ProgressBar
+    $bar.Location = New-Object System.Drawing.Point(300, 572)
+    $bar.Size = New-Object System.Drawing.Size(660, 18)
+    $bar.Minimum = 0
+    $bar.Maximum = 100
+    $global:MTProgress = $bar
+
+    $status = New-Object System.Windows.Forms.Label
+    $status.Text = 'Listo.'
+    $status.Location = New-Object System.Drawing.Point(300, 598)
+    $status.AutoSize = $true
+    $status.ForeColor = MT-Color 140 170 210
+
+    $global:MTButtons = @($btnRun, $btnLast, $btnDef, $btnRst, $btnNo, $btnExit)
+
+    $btnRun.Add_Click({
+        MT-GuiBusy $true
+        try {
+            $perfil = if ($global:MTRadioLow.Checked) { 1 } else { 2 }
+            MT-Execute -GameProfile $perfil
+        }
+        catch {
+            MT-Log -Level ERROR -Message ('Fallo inesperado: ' + $_.Exception.Message)
+        }
+        finally {
+            $global:MTProgress.Value = 0
+            MT-GuiBusy $false
+        }
+    })
+
+    $btnLast.Add_Click({
+        MT-GuiBusy $true
+        try { MT-RestoreLast } finally { MT-GuiBusy $false }
+    })
+
+    $btnDef.Add_Click({
+        MT-GuiBusy $true
+        try {
+            $t = New-MTTask -Module 'Predeterminados' -Name 'Valores predeterminados' -Items (MT-DefaultItems)
+            $r = MT-RunTasks -Tasks @($t)
+            MT-Summary -Results $r
+        }
+        finally {
+            $global:MTProgress.Value = 0
+            MT-GuiBusy $false
+        }
+    })
+
+    $btnRst.Add_Click({
+        try { Start-Process -FilePath 'rstrui.exe' }
+        catch { MT-Log -Level ERROR -Message ('No se pudo abrir Restaurar sistema: ' + $_.Exception.Message) }
+    })
+
+    $btnNo.Add_Click({
+        MT-Log -Level INFO -Message 'No se ha ejecutado nada.'
+        $global:MTForm.Close()
+    })
+
+    $btnExit.Add_Click({
+        $global:MTExitShell = $true
+        $global:MTForm.Close()
+    })
+
+    $form.Add_Shown({
+        MT-StartSession
+    })
+
+    $form.Controls.AddRange(@($title, $left, $rich, $bar, $status))
+    $form.ShowDialog() | Out-Null
+
+    $global:MTRichBox  = $null
+    $global:MTProgress = $null
+    $global:MTButtons  = $null
+}
+
 function MT-Main {
     if (-not (MT-IsAdmin)) {
         if ($ManuTweaksUrl -like '*TU-URL*') {
@@ -505,53 +704,23 @@ function MT-Main {
         return
     }
 
-    MT-Header
-    MT-Section 'Acceso'
-    $typed = MT-ReadPassword
-    $ok    = MT-TestPassword -Password $typed
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+
+    $typed = MT-AskPassword
+    if ($null -eq $typed) { return }
+    $ok = MT-TestPassword -Password $typed
     $typed = $null
     if (-not $ok) {
-        MT-Log -Level ERROR -Message 'Contrasena incorrecta. No se ha hecho ningun cambio.'
+        [System.Windows.Forms.MessageBox]::Show('Contrasena incorrecta. No se ha hecho ningun cambio.', 'ManuTweaks',
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         return
     }
-    MT-Log -Level OK -Message 'Acceso concedido.'
 
-    MT-StartSession
-
-    $done = $false
-    while (-not $done) {
-        MT-Header
-        MT-Section 'Menu principal'
-        MT-Option '1' 'Si' 'ejecutar la optimizacion automaticamente'
-        MT-Option '2' 'No' 'no ejecutar por ahora'
-        MT-Option '3' 'Salir' 'cerrar PowerShell'
-        MT-Option '4' 'Restaurar' 'revertir cambios o valores predeterminados'
-        Write-Host ''
-        $option = (Read-Host '  Elige una opcion').Trim()
-        switch ($option) {
-            '1' {
-                MT-Header
-                MT-Section 'Perfil de juego'
-                MT-Option '1' 'Bajos' 'optimizar_juego__bajos_.reg'
-                MT-Option '2' 'Medios y altos' 'optimizar_juego__medios-altos_.reg'
-                Write-Host ''
-                $perfil = (Read-Host '  Elige 1 o 2').Trim()
-                if ($perfil -eq '1' -or $perfil -eq '2') {
-                    MT-Execute -GameProfile ([int]$perfil)
-                    MT-Pause
-                    $done = $true
-                }
-                else {
-                    MT-Log -Level WARN -Message 'Opcion no valida. No se ha ejecutado nada.'
-                    MT-Pause
-                }
-            }
-            '2' { MT-Log -Level INFO -Message 'No se ha ejecutado nada.'; $done = $true }
-            '3' { exit }
-            '4' { MT-RestoreMenu }
-            default { MT-Log -Level WARN -Message 'Opcion no valida.'; MT-Pause }
-        }
-    }
+    MT-ShowMain
+    if ($global:MTExitShell) { exit }
 }
 
 if (-not $env:MANUTWEAKS_NO_RUN) { MT-Main }
+
