@@ -4,13 +4,10 @@
 # Nada se modifica sin contrasena correcta. Al acertarla: copia de valores + punto de restauracion.
 
 # ===================== CONFIGURACION =====================
-$ManuTweaksUrl  = 'iwr -useb https://raw.githubusercontent.com/manu081010stmt/manutweaks/main/ManuTweaks.ps1 | iex'
+$ManuTweaksUrl  = 'https://raw.githubusercontent.com/manu081010stmt/manutweaks/main/ManuTweaks.ps1'
 $AuthSalt       = 'gWG6zurDC2jPONEdgp+P3w=='
 $AuthHash       = 't87iufZq6+DB3TOZl9dp5CtXnx+cK5Jn4qM8ZuuMEno='
 $AuthIterations = 210000
-$MTRoot         = Join-Path $env:ProgramData 'ManuTweaks'
-$MTLogDir       = Join-Path $MTRoot 'Logs'
-$MTBackupDir    = Join-Path $MTRoot 'Backups'
 
 # ===================== INTERFAZ =====================
 $MTWidth = 62
@@ -96,10 +93,9 @@ function MT-ApplyItem {
 }
 
 function MT-Restore {
-    param([Parameter(Mandatory = $true)][string]$ManifestPath)
-    $entries = @(Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json)
+    param([Parameter(Mandatory = $true)][object[]]$Entries)
     $ok = 0; $fail = 0
-    foreach ($e in $entries) {
+    foreach ($e in $Entries) {
         try {
             if ($e.Existed) {
                 if (-not (Test-Path -LiteralPath $e.Path)) { New-Item -Path $e.Path -Force -ErrorAction Stop | Out-Null }
@@ -387,47 +383,34 @@ function MT-Summary {
 }
 
 function MT-StartSession {
-    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-    New-Item -ItemType Directory -Path $MTLogDir -Force | Out-Null
-    $global:MTSessionDir = Join-Path $MTBackupDir $stamp
-    New-Item -ItemType Directory -Path $global:MTSessionDir -Force | Out-Null
-    $global:MTLogFile = Join-Path $MTLogDir "ManuTweaks_$stamp.log"
-    $global:MTBackup  = New-Object System.Collections.ArrayList
-
-    MT-Section 'Preparacion'
-    MT-Log -Level INFO -Message "Registro de actividad: $global:MTLogFile"
-
+    $global:MTBackup = New-Object System.Collections.ArrayList
+    MT-Log -Level INFO -Message 'Preparando sesion...'
     try {
         Checkpoint-Computer -Description 'ManuTweaks' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
         MT-Log -Level OK -Message 'Punto de restauracion creado.'
     }
     catch {
-        MT-Log -Level WARN -Message "Punto de restauracion no creado: $($_.Exception.Message)"
+        MT-Log -Level WARN -Message ('Punto de restauracion no creado: ' + $_.Exception.Message)
     }
-
     foreach ($i in (MT-AllTrackedItems)) { MT-AddRegBackup -Path $i.Path -Name $i.Name }
-    $snapshot = Join-Path $global:MTSessionDir 'snapshot_previo.json'
-    ConvertTo-Json -InputObject @($global:MTBackup) -Depth 5 | Set-Content -LiteralPath $snapshot -Encoding UTF8
-    $global:MTBackup.Clear()
-    MT-Log -Level OK -Message "Valores actuales guardados: $snapshot"
+    $global:MTSnapshot = @($global:MTBackup)
+    $global:MTBackup = New-Object System.Collections.ArrayList
+    MT-Log -Level OK -Message ('Valores actuales guardados en memoria (' + $global:MTSnapshot.Count + ' valores).')
 }
 
 function MT-Execute {
     param([Parameter(Mandatory = $true)][int]$GameProfile)
     $results = MT-RunTasks -Tasks (MT-GetTasks -GameProfile $GameProfile)
     MT-Summary -Results $results
-    MT-Log -Level INFO -Message "Log completo: $global:MTLogFile"
 }
 
 function MT-RestoreLast {
-    $snap = $null
-    foreach ($d in @(Get-ChildItem -LiteralPath $MTBackupDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
-        $f = Join-Path $d.FullName 'snapshot_previo.json'
-        if (Test-Path -LiteralPath $f) { $snap = $f; break }
+    if (-not $global:MTSnapshot -or $global:MTSnapshot.Count -eq 0) {
+        MT-Log -Level WARN -Message 'No hay valores guardados en esta sesion.'
+        return
     }
-    if (-not $snap) { MT-Log -Level WARN -Message 'No hay ninguna copia guardada para restaurar.'; return }
-    MT-Log -Level INFO -Message "Restaurando valores de: $snap"
-    MT-Restore -ManifestPath $snap
+    MT-Log -Level INFO -Message 'Restaurando los valores guardados al abrir la ventana...'
+    MT-Restore -Entries $global:MTSnapshot
 }
 
 
@@ -441,7 +424,6 @@ function MT-Log {
         [Parameter(Mandatory = $true)][string]$Message
     )
     $line = '[{0}] [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
-    if ($global:MTLogFile) { Add-Content -LiteralPath $global:MTLogFile -Value $line -Encoding UTF8 }
     $tag = switch ($Level) {
         'OK'    { '[ OK ]' }
         'WARN'  { '[WARN]' }
@@ -563,19 +545,7 @@ function MT-ShowMain {
     $title = MT-NewLabel 'ManuTweaks' 20 14 ([System.Drawing.Color]::White) 18 'Bold'
     $sub   = MT-NewLabel 'Optimizacion de Windows' 22 52 $muted 9
 
-    $lblPerfil = MT-NewLabel 'Perfil de juego' 20 92 $light 10 'Bold'
-    $rbLow = New-Object System.Windows.Forms.RadioButton
-    $rbLow.Text = 'Bajos'
-    $rbLow.Location = New-Object System.Drawing.Point(20, 118)
-    $rbLow.AutoSize = $true
-    $rbLow.Checked = $true
-    $rbLow.ForeColor = $light
-    $rbHigh = New-Object System.Windows.Forms.RadioButton
-    $rbHigh.Text = 'Medios y altos'
-    $rbHigh.Location = New-Object System.Drawing.Point(120, 118)
-    $rbHigh.AutoSize = $true
-    $rbHigh.ForeColor = $light
-    $global:MTRadioLow = $rbLow
+    $lblPerfil = MT-NewLabel 'Perfil de juego: Bajos' 20 92 $light 10 'Bold'
 
     $btnRun  = MT-NewButton 'Iniciar optimizacion' 20 160 250 42 $blue
     $btnRst  = MT-NewButton 'Restaurar' 290 160 250 42 $grey
@@ -591,7 +561,7 @@ function MT-ShowMain {
     $rich.Font = New-Object System.Drawing.Font('Consolas', 9.5)
     $global:MTRichBox = $rich
 
-    $global:MTButtons = @($btnRun, $btnRst, $btnExit, $rbLow, $rbHigh)
+    $global:MTButtons = @($btnRun, $btnRst, $btnExit)
 
     $btnRun.Add_Click({
         $pregunta = 'Se aplicaran los ajustes de optimizacion. Antes se guardaran los valores actuales. Continuar?'
@@ -601,7 +571,7 @@ function MT-ShowMain {
             MT-Log -Level INFO -Message 'Cancelado. No se ha aplicado nada.'
             return
         }
-        $perfil = if ($global:MTRadioLow.Checked) { 1 } else { 2 }
+        $perfil = 1
         MT-SetButtons $false
         try { MT-Execute -GameProfile $perfil }
         catch { MT-Log -Level ERROR -Message ('Fallo inesperado: ' + $_.Exception.Message) }
@@ -631,7 +601,7 @@ function MT-ShowMain {
         try { MT-StartSession } finally { MT-SetButtons $true }
     })
 
-    $form.Controls.AddRange(@($title, $sub, $lblPerfil, $rbLow, $rbHigh, $btnRun, $btnRst, $btnExit, $rich))
+    $form.Controls.AddRange(@($title, $sub, $lblPerfil, $btnRun, $btnRst, $btnExit, $rich))
     [void]$form.ShowDialog()
 
     $global:MTRichBox = $null
