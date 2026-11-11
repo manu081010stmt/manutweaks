@@ -228,111 +228,6 @@ function MT-AllTrackedItems {
 }
 
 # ===================== TAREAS DE OPTIMIZACION =====================
-function MT-GetTasks {
-    param([Parameter(Mandatory = $true)][int]$GameProfile)
-    $gameDesc = if ($GameProfile -eq 1) { 'Perfil bajos (prioridad 6).' } else { 'Perfil medios y altos (prioridad 8).' }
-    return @(
-        (New-MTTask -Module 'Juegos' -Name 'Perfil de juego' -Description $gameDesc `
-            -Items (MT-GameItems -Profile $GameProfile)),
-
-        (New-MTTask -Module 'Registro' -Name 'Valores de optimizacion' `
-            -Description 'Memoria, respuesta del sistema, GPU, limitacion de energia, planes y USB (captura y pack).' `
-            -Items (MT-OptimizationItems)),
-
-        (New-MTTask -Module 'Registro' -Name 'SvcHostSplitThresholdInKB' `
-            -Description 'Valor = (RAM en GB x 1024) x 1024 en HKLM\SYSTEM\ControlSet001\Control.' -Action {
-                $bytes = [int64]((Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory)
-                $gb    = [math]::Round($bytes / 1GB)
-                $value = MT-SvcHostValue -GB $gb
-                MT-Log -Level INFO -Message "RAM detectada: $gb GB. Valor aplicado: $value"
-                MT-AddRegBackup -Path 'HKLM:\SYSTEM\ControlSet001\Control' -Name 'SvcHostSplitThresholdInKB'
-                MT-SetReg -Path 'HKLM:\SYSTEM\ControlSet001\Control' -Name 'SvcHostSplitThresholdInKB' -Value $value
-            }),
-
-        (New-MTTask -Module 'Energia' -Name 'Plan de energia' `
-            -Description 'Duplica e9a42b02-d5df-448d-aa00-03f14749eb61. Si falla, usa C:\briefrenzo.pow.' -Action {
-                $done = $false
-                try {
-                    $out = (& powercfg.exe -duplicatescheme 'e9a42b02-d5df-448d-aa00-03f14749eb61' 2>&1) | Out-String
-                    if ($LASTEXITCODE -ne 0) { throw "powercfg codigo $LASTEXITCODE. $out" }
-                    $m = [regex]::Match($out, '[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
-                    if (-not $m.Success) { throw 'No se pudo leer el GUID del plan creado.' }
-                    MT-Log -Level OK -Message "Plan duplicado: $($m.Value)"
-                    $done = $true
-                }
-                catch {
-                    MT-Log -Level WARN -Message "Plan principal no disponible: $($_.Exception.Message) Se usa el plan alternativo."
-                }
-                if (-not $done) {
-                    if (-not (Test-Path -LiteralPath 'C:\briefrenzo.pow')) { throw 'Plan alternativo no disponible: falta C:\briefrenzo.pow.' }
-                    $imp = (& powercfg.exe /import 'C:\briefrenzo.pow' 2>&1) | Out-String
-                    if ($LASTEXITCODE -ne 0) { throw "Plan alternativo fallo (codigo $LASTEXITCODE): $imp" }
-                    MT-Log -Level OK -Message 'Plan alternativo importado.'
-                }
-            }),
-
-        (New-MTTask -Module 'Servicios' -Name 'DiagTrack (telemetria)' `
-            -Description 'ADVERTENCIA: deshabilita la experiencia de usuario y telemetria asociadas.' -Action {
-                $svc = Get-Service -Name 'DiagTrack' -ErrorAction SilentlyContinue
-                if (-not $svc) {
-                    $global:MTSkipReason = 'El servicio DiagTrack no existe en este equipo.'
-                    return
-                }
-                MT-AddRegBackup -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\DiagTrack' -Name 'Start'
-                Set-Service -Name 'DiagTrack' -StartupType Disabled -ErrorAction Stop
-                Stop-Service -Name 'DiagTrack' -Force -ErrorAction SilentlyContinue
-                $s = Get-Service -Name 'DiagTrack' -ErrorAction Stop
-                if ($s.StartType -ne 'Disabled') { throw "Tipo de inicio actual: $($s.StartType)." }
-            }),
-
-        (New-MTTask -Module 'Sistema' -Name 'Paquetes de Group Policy (gpedit)' `
-            -Description 'Instala los paquetes ClientExtensions y ClientTools con DISM (gpedit windows 11.bat).' -Action {
-                $dir  = Join-Path $env:SystemRoot 'servicing\Packages'
-                $pkgs = @(Get-ChildItem -LiteralPath $dir -Filter 'Microsoft-Windows-GroupPolicy-ClientExtensions-Package~3*.mum' -ErrorAction SilentlyContinue) +
-                        @(Get-ChildItem -LiteralPath $dir -Filter 'Microsoft-Windows-GroupPolicy-ClientTools-Package~3*.mum' -ErrorAction SilentlyContinue)
-                if ($pkgs.Count -eq 0) { throw 'No se encontraron paquetes de Group Policy en servicing\Packages.' }
-                foreach ($p in $pkgs) {
-                    $null = & dism.exe /online /norestart "/add-package:$($p.FullName)" 2>&1
-                    if ($LASTEXITCODE -notin 0, 3010) { throw "DISM fallo con $($p.Name) (codigo $LASTEXITCODE)." }
-                }
-                MT-Log -Level OK -Message "Paquetes instalados: $($pkgs.Count)"
-            }),
-
-        (New-MTTask -Module 'Sistema' -Name 'DISM CheckHealth / RestoreHealth' `
-            -Description 'checkhealth; restorehealth solo si detecta errores reparables.' -Action {
-                $check = (& dism.exe /online /cleanup-image /checkhealth 2>&1) | Out-String
-                if ($LASTEXITCODE -ne 0) { throw "checkhealth fallo (codigo $LASTEXITCODE)." }
-                switch (MT-DismState -Output $check) {
-                    'Healthy' { MT-Log -Level OK -Message 'DISM: sin errores en el almacen de componentes.' }
-                    'Repairable' {
-                        MT-Log -Level WARN -Message 'DISM: errores reparables. Ejecutando RestoreHealth...'
-                        $null = & dism.exe /online /cleanup-image /restorehealth 2>&1
-                        if ($LASTEXITCODE -ne 0) { throw "restorehealth fallo (codigo $LASTEXITCODE)." }
-                    }
-                    default { throw 'No se pudo interpretar la salida de checkhealth.' }
-                }
-            }),
-
-        (New-MTTask -Module 'Limpieza' -Name 'Liberador de espacio (cleanmgr)' `
-            -Description 'cleanmgr /sagerun:65535 (solo tiene efecto si el perfil 65535 esta configurado).' -Action {
-                $null = & cleanmgr.exe /sagerun:65535 2>&1
-            }),
-
-        (New-MTTask -Module 'Limpieza' -Name 'Limpiar temporales' `
-            -Description 'Vacia C:\Windows\Temp y %TEMP% (solo contenido) y limpia la cache DNS.' -Action {
-                $null = & ipconfig.exe /flushdns 2>&1
-                $removed = 0; $skipped = 0
-                foreach ($dir in @('C:\Windows\Temp', $env:TEMP)) {
-                    if ([string]::IsNullOrEmpty($dir) -or -not (Test-Path -LiteralPath $dir)) { continue }
-                    foreach ($it in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
-                        try { Remove-Item -LiteralPath $it.FullName -Recurse -Force -ErrorAction Stop; $removed++ }
-                        catch { $skipped++ }
-                    }
-                }
-                MT-Log -Level INFO -Message "Eliminados: $removed. Omitidos (en uso): $skipped."
-            })
-    )
-}
 
 # ===================== EJECUCION =====================
 function MT-RunTasks {
@@ -412,12 +307,6 @@ function MT-StartSession {
     MT-Log -Level OK -Message "Valores actuales guardados: $snapshot"
 }
 
-function MT-Execute {
-    param([Parameter(Mandatory = $true)][int]$GameProfile)
-    $results = MT-RunTasks -Tasks (MT-GetTasks -GameProfile $GameProfile)
-    MT-Summary -Results $results
-    MT-Log -Level INFO -Message "Log completo: $global:MTLogFile"
-}
 
 function MT-RestoreLast {
     $snap = $null
@@ -492,6 +381,7 @@ function MT-NewButton {
 
 function MT-GuiBusy {
     param([bool]$Busy)
+    $global:MTBusy = $Busy
     foreach ($b in $global:MTButtons) { $b.Enabled = -not $Busy }
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -534,158 +424,6 @@ function MT-AskPassword {
     return $tb.Text
 }
 
-function MT-ShowMain {
-    $navy   = MT-Color 10 25 47
-    $panel  = MT-Color 17 40 71
-    $head   = MT-Color 0 51 102
-    $blue   = MT-Color 0 102 204
-    $steel  = MT-Color 45 62 88
-    $light  = MT-Color 214 230 250
-    $logBg  = MT-Color 6 15 30
-
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'ManuTweaks'
-    $form.ClientSize = New-Object System.Drawing.Size(980, 640)
-    $form.StartPosition = 'CenterScreen'
-    $form.FormBorderStyle = 'FixedSingle'
-    $form.MaximizeBox = $false
-    $form.BackColor = $navy
-    $form.ForeColor = $light
-    $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
-    $global:MTForm = $form
-
-    $title = New-Object System.Windows.Forms.Label
-    $title.Text = '   M A N U T W E A K S'
-    $title.Font = New-Object System.Drawing.Font('Segoe UI', 18, [System.Drawing.FontStyle]::Bold)
-    $title.ForeColor = [System.Drawing.Color]::White
-    $title.BackColor = $head
-    $title.Location = New-Object System.Drawing.Point(0, 0)
-    $title.Size = New-Object System.Drawing.Size(980, 70)
-    $title.TextAlign = 'MiddleLeft'
-
-    $left = New-Object System.Windows.Forms.Panel
-    $left.Location = New-Object System.Drawing.Point(20, 90)
-    $left.Size = New-Object System.Drawing.Size(260, 530)
-    $left.BackColor = $panel
-
-    $lblPerfil = New-Object System.Windows.Forms.Label
-    $lblPerfil.Text = 'PERFIL DE JUEGO'
-    $lblPerfil.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-    $lblPerfil.Location = New-Object System.Drawing.Point(20, 18)
-    $lblPerfil.AutoSize = $true
-
-    $rbLow = New-Object System.Windows.Forms.RadioButton
-    $rbLow.Text = 'Bajos'
-    $rbLow.Location = New-Object System.Drawing.Point(20, 44)
-    $rbLow.AutoSize = $true
-    $rbLow.Checked = $true
-    $rbHigh = New-Object System.Windows.Forms.RadioButton
-    $rbHigh.Text = 'Medios y altos'
-    $rbHigh.Location = New-Object System.Drawing.Point(20, 72)
-    $rbHigh.AutoSize = $true
-    $global:MTRadioLow = $rbLow
-
-    $btnRun = MT-NewButton 'Ejecutar optimizacion' 20 115 220 44 $blue
-
-    $lblRes = New-Object System.Windows.Forms.Label
-    $lblRes.Text = 'RESTAURAR'
-    $lblRes.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-    $lblRes.Location = New-Object System.Drawing.Point(20, 185)
-    $lblRes.AutoSize = $true
-
-    $btnLast = MT-NewButton 'Ultima sesion' 20 212 220 38 $steel
-    $btnDef  = MT-NewButton 'Valores predeterminados' 20 256 220 38 $steel
-    $btnRst  = MT-NewButton 'Restaurar sistema de Windows' 20 300 220 38 $steel
-
-    $btnNo   = MT-NewButton 'No (cerrar sin ejecutar)' 20 432 220 38 $steel
-    $btnExit = MT-NewButton 'Salir de PowerShell' 20 476 220 38 (MT-Color 140 35 35)
-
-    $left.Controls.AddRange(@($lblPerfil, $rbLow, $rbHigh, $btnRun, $lblRes, $btnLast, $btnDef, $btnRst, $btnNo, $btnExit))
-
-    $rich = New-Object System.Windows.Forms.RichTextBox
-    $rich.Location = New-Object System.Drawing.Point(300, 90)
-    $rich.Size = New-Object System.Drawing.Size(660, 470)
-    $rich.ReadOnly = $true
-    $rich.BackColor = $logBg
-    $rich.ForeColor = $light
-    $rich.BorderStyle = 'FixedSingle'
-    $rich.Font = New-Object System.Drawing.Font('Consolas', 9.5)
-    $global:MTRichBox = $rich
-
-    $bar = New-Object System.Windows.Forms.ProgressBar
-    $bar.Location = New-Object System.Drawing.Point(300, 572)
-    $bar.Size = New-Object System.Drawing.Size(660, 18)
-    $bar.Minimum = 0
-    $bar.Maximum = 100
-    $global:MTProgress = $bar
-
-    $status = New-Object System.Windows.Forms.Label
-    $status.Text = 'Listo.'
-    $status.Location = New-Object System.Drawing.Point(300, 598)
-    $status.AutoSize = $true
-    $status.ForeColor = MT-Color 140 170 210
-
-    $global:MTButtons = @($btnRun, $btnLast, $btnDef, $btnRst, $btnNo, $btnExit)
-
-    $btnRun.Add_Click({
-        MT-GuiBusy $true
-        try {
-            $perfil = if ($global:MTRadioLow.Checked) { 1 } else { 2 }
-            MT-Execute -GameProfile $perfil
-        }
-        catch {
-            MT-Log -Level ERROR -Message ('Fallo inesperado: ' + $_.Exception.Message)
-        }
-        finally {
-            $global:MTProgress.Value = 0
-            MT-GuiBusy $false
-        }
-    })
-
-    $btnLast.Add_Click({
-        MT-GuiBusy $true
-        try { MT-RestoreLast } finally { MT-GuiBusy $false }
-    })
-
-    $btnDef.Add_Click({
-        MT-GuiBusy $true
-        try {
-            $t = New-MTTask -Module 'Predeterminados' -Name 'Valores predeterminados' -Items (MT-DefaultItems)
-            $r = MT-RunTasks -Tasks @($t)
-            MT-Summary -Results $r
-        }
-        finally {
-            $global:MTProgress.Value = 0
-            MT-GuiBusy $false
-        }
-    })
-
-    $btnRst.Add_Click({
-        try { Start-Process -FilePath 'rstrui.exe' }
-        catch { MT-Log -Level ERROR -Message ('No se pudo abrir Restaurar sistema: ' + $_.Exception.Message) }
-    })
-
-    $btnNo.Add_Click({
-        MT-Log -Level INFO -Message 'No se ha ejecutado nada.'
-        $global:MTForm.Close()
-    })
-
-    $btnExit.Add_Click({
-        $global:MTExitShell = $true
-        $global:MTForm.Close()
-    })
-
-    $form.Add_Shown({
-        MT-StartSession
-    })
-
-    $form.Controls.AddRange(@($title, $left, $rich, $bar, $status))
-    $form.ShowDialog() | Out-Null
-
-    $global:MTRichBox  = $null
-    $global:MTProgress = $null
-    $global:MTButtons  = $null
-}
 
 function MT-Main {
     if (-not (MT-IsAdmin)) {
@@ -722,5 +460,408 @@ function MT-Main {
     if ($global:MTExitShell) { exit }
 }
 
-if (-not $env:MANUTWEAKS_NO_RUN) { MT-Main }
 
+# ===================== CATALOGO DE AJUSTES =====================
+function New-MTTweak {
+    param(
+        [string]$Id,
+        [string]$Section,
+        [string]$Name,
+        [string]$Description,
+        [object[]]$Items = @(),
+        [scriptblock]$Action,
+        [bool]$Default = $true
+    )
+    [pscustomobject]@{ Id = $Id; Section = $Section; Name = $Name; Description = $Description; Items = $Items; Action = $Action; Default = $Default }
+}
+
+function MT-Catalog {
+    param([int]$GameProfile = 1)
+    $p = MT-Paths
+    return @(
+        (New-MTTweak 'mem' 'Rendimiento' 'Memoria RAM y cache' 'Gestion de memoria, cache de segundo nivel y prioridad VxD / BIOS.' -Items @(
+            (New-MTDw $p.Mm 'ClearPageFileAtShutdown' 0),
+            (New-MTDw $p.Mm 'DisablePagingExecutive' 1),
+            (New-MTDw $p.Mm 'LargeSystemCache' 0),
+            (New-MTDw $p.Mm 'SecondLevelDataCache' 1024),
+            (New-MTDw $p.Vxd 'FastDRAM' 1),
+            (New-MTDw $p.Vxd 'CPUPriority' 1)
+        )),
+        (New-MTTweak 'net' 'Rendimiento' 'Respuesta del sistema y red' 'Quita el limite de red y prioriza la respuesta del sistema.' -Items @(
+            (New-MTDw $p.Profile 'NetworkThrottlingIndex' -1),
+            (New-MTDw $p.Profile 'SystemResponsiveness' 0)
+        )),
+        (New-MTTweak 'svc' 'Rendimiento' 'SvcHostSplitThresholdInKB' 'Ajusta el umbral de procesos svchost segun la RAM instalada.' -Action {
+            $bytes = [int64]((Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory)
+            $gb    = [math]::Round($bytes / 1GB)
+            $value = MT-SvcHostValue -GB $gb
+            MT-Log -Level INFO -Message "RAM detectada: $gb GB. Valor aplicado: $value"
+            MT-AddRegBackup -Path 'HKLM:\SYSTEM\ControlSet001\Control' -Name 'SvcHostSplitThresholdInKB'
+            MT-SetReg -Path 'HKLM:\SYSTEM\ControlSet001\Control' -Name 'SvcHostSplitThresholdInKB' -Value $value
+        }),
+        (New-MTTweak 'gpu' 'GPU y energia' 'Programacion de GPU (HwSchMode)' 'Programacion de GPU acelerada por hardware. Requiere reinicio.' -Items @(
+            (New-MTDw $p.Gfx 'HwSchMode' 2)
+        )),
+        (New-MTTweak 'pgpu' 'GPU y energia' 'Directiva de preferencia GPU' 'Opcion de energia de preferencia de GPU.' -Items @(
+            (New-MTDw "$($p.PsCs1)\5FB4938D-1EE8-4b0f-9A3C-5036B0AB995C\DD848B2A-8A5D-4451-9AE2-39CD41658F6C" 'Attributes' 2)
+        )),
+        (New-MTTweak 'thr' 'GPU y energia' 'Desactivar limitacion de energia' 'Desactiva la limitacion de energia (PowerThrottling).' -Items @(
+            (New-MTDw $p.Thr 'PowerThrottlingOff' 1)
+        )),
+        (New-MTTweak 'cpu' 'GPU y energia' 'Rendimiento del procesador' 'Ajuste del plan de energia para el rendimiento del procesador.' -Items @(
+            (New-MTDw "$($p.PsCs1)\54533251-82be-4824-96c1-47b60b740d00\be337238-0d82-4146-a960-4f3749d470c7" 'Attributes' 2)
+        )),
+        (New-MTTweak 'cpuover' 'GPU y energia' 'Umbral de sobreuso del procesador' 'Umbral de sobreuso del procesador en el plan de energia.' -Items @(
+            (New-MTDw "$($p.PsCs)\54533251-82be-4824-96c1-47b60b740d00\943c8cb6-6f93-4227-ad87-e9a3feec08d1" 'Attributes' 2)
+        )),
+        (New-MTTweak 'usb' 'GPU y energia' 'USB 3 Link Power Management' 'Muestra la opcion de gestion de energia del enlace USB 3.' -Items @(
+            (New-MTDw "$($p.PsCs)\2a737441-1930-4402-8d77-b2bebba308a3\d4e98f31-5ffe-4ce1-be31-1b38b384c009" 'Attributes' 2)
+        )),
+        (New-MTTweak 'plan' 'GPU y energia' 'Plan de energia de alto rendimiento' 'Duplica el plan e9a42b02... Si falla, usa C:\briefrenzo.pow.' -Action {
+            $done = $false
+            try {
+                $out = (& powercfg.exe -duplicatescheme 'e9a42b02-d5df-448d-aa00-03f14749eb61' 2>&1) | Out-String
+                if ($LASTEXITCODE -ne 0) { throw "powercfg codigo $LASTEXITCODE. $out" }
+                $m = [regex]::Match($out, '[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
+                if (-not $m.Success) { throw 'No se pudo leer el GUID del plan creado.' }
+                MT-Log -Level OK -Message "Plan duplicado: $($m.Value)"
+                $done = $true
+            }
+            catch {
+                MT-Log -Level WARN -Message "Plan principal no disponible: $($_.Exception.Message) Se usa el plan alternativo."
+            }
+            if (-not $done) {
+                if (-not (Test-Path -LiteralPath 'C:\briefrenzo.pow')) { throw 'Plan alternativo no disponible: falta C:\briefrenzo.pow.' }
+                $imp = (& powercfg.exe /import 'C:\briefrenzo.pow' 2>&1) | Out-String
+                if ($LASTEXITCODE -ne 0) { throw "Plan alternativo fallo (codigo $LASTEXITCODE): $imp" }
+                MT-Log -Level OK -Message 'Plan alternativo importado.'
+            }
+        }),
+        (New-MTTweak 'game' 'Juegos' 'Aplicar perfil de juego' 'Prioridad de GPU y CPU para juegos. Elige el perfil abajo.' -Items (MT-GameItems -Profile $GameProfile) -Default $false),
+        (New-MTTweak 'diag' 'Servicios' 'Telemetria de Windows (DiagTrack)' 'ADVERTENCIA: deshabilita la experiencia de usuario y telemetria asociadas.' -Default $false -Action {
+            $svc = Get-Service -Name 'DiagTrack' -ErrorAction SilentlyContinue
+            if (-not $svc) {
+                $global:MTSkipReason = 'El servicio DiagTrack no existe en este equipo.'
+                return
+            }
+            MT-AddRegBackup -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\DiagTrack' -Name 'Start'
+            Set-Service -Name 'DiagTrack' -StartupType Disabled -ErrorAction Stop
+            Stop-Service -Name 'DiagTrack' -Force -ErrorAction SilentlyContinue
+            $s2 = Get-Service -Name 'DiagTrack' -ErrorAction Stop
+            if ($s2.StartType -ne 'Disabled') { throw "Tipo de inicio actual: $($s2.StartType)." }
+        }),
+        (New-MTTweak 'gp' 'Sistema' 'Editor de directivas de grupo (gpedit)' 'Instala los paquetes de Group Policy con DISM. Util en Windows Home.' -Default $false -Action {
+            $dir  = Join-Path $env:SystemRoot 'servicing\Packages'
+            $pkgs = @(Get-ChildItem -LiteralPath $dir -Filter 'Microsoft-Windows-GroupPolicy-ClientExtensions-Package~3*.mum' -ErrorAction SilentlyContinue) +
+                    @(Get-ChildItem -LiteralPath $dir -Filter 'Microsoft-Windows-GroupPolicy-ClientTools-Package~3*.mum' -ErrorAction SilentlyContinue)
+            if ($pkgs.Count -eq 0) { throw 'No se encontraron paquetes de Group Policy en servicing\Packages.' }
+            foreach ($pkg in $pkgs) {
+                $null = & dism.exe /online /norestart "/add-package:$($pkg.FullName)" 2>&1
+                if ($LASTEXITCODE -notin 0, 3010) { throw "DISM fallo con $($pkg.Name) (codigo $LASTEXITCODE)." }
+            }
+            MT-Log -Level OK -Message "Paquetes instalados: $($pkgs.Count)"
+        }),
+        (New-MTTweak 'dism' 'Sistema' 'Reparar archivos del sistema (DISM)' 'Comprueba el almacen de componentes y repara solo si detecta errores.' -Default $false -Action {
+            $check = (& dism.exe /online /cleanup-image /checkhealth 2>&1) | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "checkhealth fallo (codigo $LASTEXITCODE)." }
+            switch (MT-DismState -Output $check) {
+                'Healthy' { MT-Log -Level OK -Message 'DISM: sin errores en el almacen de componentes.' }
+                'Repairable' {
+                    MT-Log -Level WARN -Message 'DISM: errores reparables. Ejecutando RestoreHealth...'
+                    $null = & dism.exe /online /cleanup-image /restorehealth 2>&1
+                    if ($LASTEXITCODE -ne 0) { throw "restorehealth fallo (codigo $LASTEXITCODE)." }
+                }
+                default { throw 'No se pudo interpretar la salida de checkhealth.' }
+            }
+        }),
+        (New-MTTweak 'clean' 'Limpieza' 'Liberador de espacio (cleanmgr)' 'Ejecuta el liberador de espacio con el perfil 65535.' -Default $false -Action {
+            $null = & cleanmgr.exe /sagerun:65535 2>&1
+        }),
+        (New-MTTweak 'temp' 'Limpieza' 'Limpiar temporales' 'Vacia C:\Windows\Temp y %TEMP% (solo contenido) y limpia la cache DNS.' -Default $false -Action {
+            $null = & ipconfig.exe /flushdns 2>&1
+            $removed = 0; $skipped = 0
+            foreach ($dir in @('C:\Windows\Temp', $env:TEMP)) {
+                if ([string]::IsNullOrEmpty($dir) -or -not (Test-Path -LiteralPath $dir)) { continue }
+                foreach ($it in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
+                    try { Remove-Item -LiteralPath $it.FullName -Recurse -Force -ErrorAction Stop; $removed++ }
+                    catch { $skipped++ }
+                }
+            }
+            MT-Log -Level INFO -Message "Eliminados: $removed. Omitidos (en uso): $skipped."
+        })
+    )
+}
+
+function MT-Execute {
+    param([string[]]$Ids, [int]$GameProfile)
+    $tweaks = @(MT-Catalog -GameProfile $GameProfile | Where-Object { $Ids -contains $_.Id })
+    $tasks  = @($tweaks | ForEach-Object {
+        New-MTTask -Module $_.Section -Name $_.Name -Description $_.Description -Items $_.Items -Action $_.Action
+    })
+    if ($tasks.Count -eq 0) { MT-Log -Level WARN -Message 'No hay ajustes que aplicar.'; return }
+
+    $results = MT-RunTasks -Tasks $tasks
+    MT-Summary -Results $results
+    MT-Log -Level INFO -Message "Log completo: $global:MTLogFile"
+}
+
+function MT-RunDefaults {
+    $t = New-MTTask -Module 'Predeterminados' -Name 'Valores predeterminados' -Items (MT-DefaultItems)
+    $r = MT-RunTasks -Tasks @($t)
+    MT-Summary -Results $r
+}
+
+# ===================== INTERFAZ =====================
+function MT-InitTheme {
+    $global:MTTheme = @{
+        Navy   = (MT-Color 10 25 47)
+        Card   = (MT-Color 20 44 78)
+        Head   = (MT-Color 0 45 96)
+        Blue   = (MT-Color 0 110 220)
+        Steel  = (MT-Color 47 66 96)
+        Danger = (MT-Color 150 40 40)
+        Light  = (MT-Color 225 235 250)
+        Muted  = (MT-Color 150 175 210)
+        Brand  = (MT-Color 110 185 255)
+        LogBg  = (MT-Color 6 15 30)
+        White  = [System.Drawing.Color]::White
+    }
+}
+
+function MT-NewLabel {
+    param([string]$Text, [int]$X, [int]$Y, [System.Drawing.Color]$Color, [float]$Size = 10, [string]$Style = 'Regular')
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $Text
+    $l.Location = New-Object System.Drawing.Point($X, $Y)
+    $l.ForeColor = $Color
+    $l.AutoSize = $true
+    $l.Font = New-Object System.Drawing.Font('Segoe UI', $Size, [System.Drawing.FontStyle]$Style)
+    return $l
+}
+
+function MT-AddRow {
+    param($Page, [int]$Y, [string]$Id, [string]$Name, [string]$Desc, [bool]$Checked)
+    $cb = New-Object System.Windows.Forms.CheckBox
+    $cb.Text = $Name
+    $cb.Font = New-Object System.Drawing.Font('Segoe UI', 10.5, [System.Drawing.FontStyle]::Bold)
+    $cb.Location = New-Object System.Drawing.Point(18, $Y)
+    $cb.AutoSize = $true
+    $cb.Checked = $Checked
+    $cb.ForeColor = $global:MTTheme.Light
+    $lbl = MT-NewLabel $Desc 44 ($Y + 27) $global:MTTheme.Muted 9
+    $Page.Controls.Add($cb)
+    $Page.Controls.Add($lbl)
+    $global:MTChecks[$Id] = $cb
+    return ($Y + 60)
+}
+
+
+function MT-ShowMain {
+    MT-InitTheme
+    $t = $global:MTTheme
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'ManuTweaks - manurust0'
+    $form.ClientSize = New-Object System.Drawing.Size(1000, 700)
+    $form.StartPosition = 'CenterScreen'
+    $form.FormBorderStyle = 'FixedSingle'
+    $form.MaximizeBox = $false
+    $form.BackColor = $t.Navy
+    $form.ForeColor = $t.Light
+    $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $global:MTForm = $form
+    $global:MTBusy = $false
+    $global:MTChecks = @{}
+    $global:MTCatalogItems = @(MT-Catalog -GameProfile 1)
+
+    # Cabecera
+    $header = New-Object System.Windows.Forms.Panel
+    $header.Location = New-Object System.Drawing.Point(0, 0)
+    $header.Size = New-Object System.Drawing.Size(1000, 78)
+    $header.BackColor = $t.Head
+    $ttl   = MT-NewLabel 'ManuTweaks' 24 10 $t.White 22 'Bold'
+    $sub   = MT-NewLabel 'Optimizacion de Windows 10 / 11' 27 48 $t.Muted 10
+    $brand = MT-NewLabel 'manurust0' 790 24 $t.Brand 16 'Bold'
+    $header.Controls.AddRange(@($ttl, $sub, $brand))
+
+    # Pestanas por categoria
+    $tabs = New-Object System.Windows.Forms.TabControl
+    $tabs.Location = New-Object System.Drawing.Point(20, 92)
+    $tabs.Size = New-Object System.Drawing.Size(960, 318)
+    $tabs.DrawMode = 'OwnerDrawFixed'
+    $tabs.SizeMode = 'Fixed'
+    $tabs.ItemSize = New-Object System.Drawing.Size(155, 32)
+    $tabs.Add_DrawItem({
+        param($s, $e)
+        $page = $s.TabPages[$e.Index]
+        $sel  = ($e.Index -eq $s.SelectedIndex)
+        $back = if ($sel) { $global:MTTheme.Blue } else { $global:MTTheme.Card }
+        $fore = if ($sel) { $global:MTTheme.White } else { $global:MTTheme.Muted }
+        $e.Graphics.FillRectangle((New-Object System.Drawing.SolidBrush $back), $e.Bounds)
+        $sf = New-Object System.Drawing.StringFormat
+        $sf.Alignment = [System.Drawing.StringAlignment]::Center
+        $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+        $rect = New-Object System.Drawing.RectangleF($e.Bounds.X, $e.Bounds.Y, $e.Bounds.Width, $e.Bounds.Height)
+        $e.Graphics.DrawString($page.Text, $s.Font, (New-Object System.Drawing.SolidBrush $fore), $rect, $sf)
+    })
+
+    $sections = @('Rendimiento', 'GPU y energia', 'Juegos', 'Servicios', 'Sistema', 'Limpieza')
+    foreach ($sec in $sections) {
+        $page = New-Object System.Windows.Forms.TabPage
+        $page.Text = $sec
+        $page.BackColor = $t.Card
+        $page.AutoScroll = $true
+        $y = 14
+        foreach ($tw in @($global:MTCatalogItems | Where-Object { $_.Section -eq $sec })) {
+            $y = MT-AddRow -Page $page -Y $y -Id $tw.Id -Name $tw.Name -Desc $tw.Description -Checked $tw.Default
+            if ($tw.Id -eq 'game') {
+                $rbLow = New-Object System.Windows.Forms.RadioButton
+                $rbLow.Text = 'Bajos'
+                $rbLow.Location = New-Object System.Drawing.Point(44, $y)
+                $rbLow.AutoSize = $true
+                $rbLow.Checked = $true
+                $rbLow.ForeColor = $t.Light
+                $rbHigh = New-Object System.Windows.Forms.RadioButton
+                $rbHigh.Text = 'Medios y altos'
+                $rbHigh.Location = New-Object System.Drawing.Point(130, $y)
+                $rbHigh.AutoSize = $true
+                $rbHigh.ForeColor = $t.Light
+                $page.Controls.AddRange(@($rbLow, $rbHigh))
+                $global:MTRadioLow  = $rbLow
+                $global:MTRadioHigh = $rbHigh
+            }
+        }
+        [void]$tabs.TabPages.Add($page)
+    }
+
+    # Registro
+    $rich = New-Object System.Windows.Forms.RichTextBox
+    $rich.Location = New-Object System.Drawing.Point(20, 420)
+    $rich.Size = New-Object System.Drawing.Size(960, 170)
+    $rich.ReadOnly = $true
+    $rich.BackColor = $t.LogBg
+    $rich.ForeColor = $t.Light
+    $rich.BorderStyle = 'FixedSingle'
+    $rich.Font = New-Object System.Drawing.Font('Consolas', 9.5)
+    $global:MTRichBox = $rich
+
+    $bar = New-Object System.Windows.Forms.ProgressBar
+    $bar.Location = New-Object System.Drawing.Point(20, 600)
+    $bar.Size = New-Object System.Drawing.Size(960, 12)
+    $bar.Minimum = 0
+    $bar.Maximum = 100
+    $global:MTProgress = $bar
+
+    # Botones
+    $btnSel     = MT-NewButton 'Seleccionar todo' 20 622 150 38 $t.Steel
+    $btnNone    = MT-NewButton 'Ninguno' 180 622 120 38 $t.Steel
+    $btnRestore = MT-NewButton 'Restaurar' 400 622 130 38 $t.Steel
+    $btnClose   = MT-NewButton 'Cerrar' 540 622 110 38 $t.Steel
+    $btnExit    = MT-NewButton 'Salir de PowerShell' 660 622 160 38 $t.Danger
+    $btnStart   = MT-NewButton 'Iniciar' 830 622 150 38 $t.Blue
+
+    $footer = MT-NewLabel 'ManuTweaks  |  Creado por manurust0' 20 668 $t.Muted 9
+
+    # Menu de restauracion
+    $menu = New-Object System.Windows.Forms.ContextMenuStrip
+    $menu.BackColor = $t.Card
+    $menu.ForeColor = $t.Light
+    $miLast = $menu.Items.Add('Restaurar ultima sesion')
+    $miDef  = $menu.Items.Add('Valores predeterminados (default.reg)')
+    $miRst  = $menu.Items.Add('Abrir Restaurar sistema de Windows')
+
+    $miLast.Add_Click({
+        if ($global:MTBusy) { return }
+        MT-GuiBusy $true
+        try { MT-RestoreLast } finally { $global:MTProgress.Value = 0; MT-GuiBusy $false }
+    })
+    $miDef.Add_Click({
+        if ($global:MTBusy) { return }
+        MT-GuiBusy $true
+        try { MT-RunDefaults } finally { $global:MTProgress.Value = 0; MT-GuiBusy $false }
+    })
+    $miRst.Add_Click({
+        if ($global:MTBusy) { return }
+        try { Start-Process -FilePath 'rstrui.exe' }
+        catch { MT-Log -Level ERROR -Message ('No se pudo abrir Restaurar sistema: ' + $_.Exception.Message) }
+    })
+
+    $btnRestore.Add_Click({
+        if ($global:MTBusy) { return }
+        $menu.Show($btnRestore, (New-Object System.Drawing.Point(0, $btnRestore.Height)))
+    })
+
+    $btnSel.Add_Click({
+        if ($global:MTBusy) { return }
+        foreach ($cb in $global:MTChecks.Values) { $cb.Checked = $true }
+    })
+
+    $btnNone.Add_Click({
+        if ($global:MTBusy) { return }
+        foreach ($cb in $global:MTChecks.Values) { $cb.Checked = $false }
+    })
+
+    $btnStart.Add_Click({
+        if ($global:MTBusy) { return }
+        $sel = @($global:MTCatalogItems | Where-Object { $global:MTChecks[$_.Id].Checked })
+        if ($sel.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show('No has seleccionado ningun ajuste.', 'ManuTweaks',
+                [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            return
+        }
+        $lines = ($sel | ForEach-Object { '  - ' + $_.Name }) -join "`r`n"
+        $pregunta = 'Vas a aplicar ' + $sel.Count + ' ajuste(s):' + "`r`n`r`n" + $lines +
+                    "`r`n`r`nSe modificara el sistema. Antes se guardaran los valores actuales. Continuar?"
+        $res = [System.Windows.Forms.MessageBox]::Show($pregunta, 'Confirmar ajustes',
+            [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($res -ne [System.Windows.Forms.DialogResult]::Yes) {
+            MT-Log -Level INFO -Message 'Cancelado por el usuario. No se ha aplicado nada.'
+            return
+        }
+        $ids    = @($sel | ForEach-Object { $_.Id })
+        $perfil = if ($global:MTRadioLow.Checked) { 1 } else { 2 }
+        MT-GuiBusy $true
+        try { MT-Execute -Ids $ids -GameProfile $perfil }
+        catch { MT-Log -Level ERROR -Message ('Fallo inesperado: ' + $_.Exception.Message) }
+        finally { $global:MTProgress.Value = 0; MT-GuiBusy $false }
+        [System.Windows.Forms.MessageBox]::Show('Proceso terminado. Revisa el registro.', 'ManuTweaks',
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+    })
+
+    $btnClose.Add_Click({
+        if ($global:MTBusy) { return }
+        MT-Log -Level INFO -Message 'Ventana cerrada. No se ha aplicado nada.'
+        $global:MTForm.Close()
+    })
+
+    $btnExit.Add_Click({
+        if ($global:MTBusy) { return }
+        $global:MTExitShell = $true
+        $global:MTForm.Close()
+    })
+
+    $global:MTButtons = @($btnSel, $btnNone, $btnRestore, $btnClose, $btnExit, $btnStart) +
+                        @($global:MTChecks.Values) + @($global:MTRadioLow, $global:MTRadioHigh)
+
+    $form.Add_Shown({
+        MT-GuiBusy $true
+        try { MT-StartSession } finally { MT-GuiBusy $false }
+    })
+
+    $form.Add_FormClosing({
+        param($sender, $e)
+        if ($global:MTBusy) {
+            $e.Cancel = $true
+            MT-Log -Level WARN -Message 'Espera a que termine el proceso actual antes de cerrar.'
+        }
+    })
+
+    $form.Controls.AddRange(@($header, $tabs, $rich, $bar, $btnSel, $btnNone, $btnRestore, $btnClose, $btnExit, $btnStart, $footer))
+    [void]$form.ShowDialog()
+
+    $global:MTRichBox  = $null
+    $global:MTProgress = $null
+    $global:MTButtons  = $null
+}
+
+if (-not $env:MANUTWEAKS_NO_RUN) { MT-Main }
