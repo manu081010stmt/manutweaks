@@ -497,24 +497,8 @@ function MT-RunSequence {
 
     foreach ($t in $tweaks) {
         $index++
-        $texto = "[$index de $total]  $($t.Name)`r`n`r`n$($t.Description)"
-        if ($t.Security) { $texto += "`r`n`r`nADVERTENCIA: $($t.Warning)" }
-        $texto += "`r`n`r`nSi = aplicar   |   No = omitir   |   Cancelar = detener todo"
-        $icono = if ($t.Security) { [System.Windows.Forms.MessageBoxIcon]::Warning } else { [System.Windows.Forms.MessageBoxIcon]::Question }
-
-        $res = [System.Windows.Forms.MessageBox]::Show($texto, 'ManuTweaks',
-            [System.Windows.Forms.MessageBoxButtons]::YesNoCancel, $icono)
-
-        if ($res -eq [System.Windows.Forms.DialogResult]::Cancel) {
-            MT-Log -Level WARN -Message 'Proceso detenido por el usuario.'
-            break
-        }
-        if ($res -eq [System.Windows.Forms.DialogResult]::No) {
-            MT-Log -Level INFO -Message "Omitido por el usuario: $($t.Name)"
-            [void]$results.Add('Omitida')
-            continue
-        }
-
+        if ($t.Security) { MT-Log -Level WARN -Message "Ajuste de seguridad: $($t.Name). $($t.Warning)" }
+        MT-Log -Level INFO -Message "[$index de $total] $($t.Name)"
         [void]$results.Add((MT-RunTweak -Tweak $t))
     }
 
@@ -526,6 +510,7 @@ function MT-RunSequence {
     MT-Log -Level WARN -Message "Omitidos: $skip"
     if ($err -gt 0) { MT-Log -Level ERROR -Message "Con error: $err" } else { MT-Log -Level OK -Message 'Con error: 0' }
 }
+
 
 # ===================== SESION: PUNTO DE RESTAURACION Y COPIA EN MEMORIA =====================
 function MT-StartSession {
@@ -632,10 +617,6 @@ function MT-ShowMain {
     $global:MTButtons = @($btnRun, $btnRst, $btnExit)
 
     $btnRun.Add_Click({
-        $pregunta = 'Se revisaran los ajustes uno por uno. En cada paso decides si aplicarlo, omitirlo o detener el proceso. Continuar?'
-        $res = [System.Windows.Forms.MessageBox]::Show($pregunta, 'ManuTweaks',
-            [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-        if ($res -ne [System.Windows.Forms.DialogResult]::Yes) { return }
         MT-SetButtons $false
         try { MT-RunSequence }
         catch { MT-Log -Level ERROR -Message ('Fallo inesperado: ' + $_.Exception.Message) }
